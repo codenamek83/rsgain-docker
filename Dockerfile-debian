@@ -1,0 +1,76 @@
+# Stage 1: Build the binary
+FROM debian:bookworm-slim AS build
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install required tools and build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    cmake \
+    build-essential \
+    pkg-config \
+    libebur128-dev \
+    libtag1-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    libswresample-dev \
+    libavutil-dev \
+    libfmt-dev \
+    libinih-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Accept version (tag) from build args
+ARG RSGAIN_VERSION
+
+# Clone specific version of rsgain
+RUN git clone --branch ${RSGAIN_VERSION} https://github.com/complexlogic/rsgain.git .
+
+# Create build directory
+RUN mkdir build
+
+# Move to build directory
+WORKDIR /app/build
+
+# Build the project
+RUN cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc)
+
+# Stage 2: Runtime image
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libebur128-dev \
+    libtag1-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    libswresample-dev \
+    libavutil-dev \
+    libfmt-dev \
+    libinih-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy binary
+COPY --from=build /app/build/rsgain /usr/bin/rsgain
+
+# Copy presets
+COPY --from=build /app/config/presets /usr/local/share/rsgain/presets
+
+# Copy your custom preset
+COPY custom-preset01.ini /usr/local/share/rsgain/presets/custom-preset01.ini
+
+# Add metadata label for traceability
+ARG RSGAIN_VERSION
+LABEL org.opencontainers.image.version=$RSGAIN_VERSION
+
+# Default command
+ENTRYPOINT ["/usr/bin/rsgain"]

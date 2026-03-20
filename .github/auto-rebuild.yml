@@ -1,0 +1,90 @@
+name: RSGain - Scheduled Docker Build
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch:
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 
+          token: ${{ secrets.DOCKER_GIT_ACTIONS }}
+
+      - name: Fetch latest upstream tag
+        id: upstream
+        run: |
+          # get latest tag from upstream repo
+          TAG=$(git ls-remote --tags https://github.com/complexlogic/rsgain.git \
+            | awk -F/ '{print $3}' \
+            | sort -V \
+            | tail -n 1)
+          echo "Latest upstream tag: $TAG"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Validate tag
+        run: |
+          if [ -z "${{ steps.upstream.outputs.tag }}" ]; then
+            echo "Upstream tag is empty. Aborting."
+            exit 1
+          fi
+
+      - name: Read last built tag
+        id: prev
+        run: |
+          if [ -f .upstream-tag ]; then
+            echo "prev_tag=$(cat .upstream-tag)" >> $GITHUB_OUTPUT
+          else
+            echo "prev_tag=none" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Decide whether to build
+        id: decision
+        run: |
+          if [ "${{ steps.upstream.outputs.tag }}" != "${{ steps.prev.outputs.prev_tag }}" ]; then
+            echo "build=true" >> $GITHUB_OUTPUT
+          else
+            echo "build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.decision.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.decision.outputs.build == 'true'
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.DOCKER_GIT_ACTIONS }}
+
+      - name: Build and push Docker image
+        if: steps.decision.outputs.build == 'true'
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 \
+            --build-arg RSGAIN_VERSION=${{ steps.upstream.outputs.tag }} \
+            -f Dockerfile \
+            -t ghcr.io/${{ github.repository_owner }}/rsgain:latest \
+            -t ghcr.io/${{ github.repository_owner }}/rsgain:${{ steps.upstream.outputs.tag }} \
+            --push \
+            .
+
+      - name: Save new tag
+        if: steps.decision.outputs.build == 'true'
+        run: echo "${{ steps.upstream.outputs.tag }}" > .upstream-tag
+
+      - name: Commit updated tag
+        if: steps.decision.outputs.build == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add .upstream-tag
+          git commit -m "Update upstream tag to ${{ steps.upstream.outputs.tag }} [skip ci]"
+          git push https://x-access-token:${{ secrets.DOCKER_GIT_ACTIONS }}@github.com/${{ github.repository }} HEAD:main          
