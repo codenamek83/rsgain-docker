@@ -1,0 +1,27 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.*
+
+# Docker
+*.tar
+*.img
+
+# Build/cache
+tmp/
+temp/
+.cache/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Python (if you ever use it in builds)
+__pycache__/
+*.pyc
