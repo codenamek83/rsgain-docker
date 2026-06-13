@@ -1,32 +1,37 @@
+# Name of the workflow as it appears in the GitHub Actions tab
 name: RSGain - Scheduled Docker Build
 
+# Defines the events that trigger this workflow
 on:
   schedule:
-    - cron: "0 0 * * *"   # every 24 hours
-  workflow_dispatch:
+    - cron: "0 0 * * *"   # Triggers automatically every 24 hours (at midnight UTC)
+  workflow_dispatch:      # Allows manually triggering the workflow from the GitHub UI
 
 jobs:
   check-and-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Runs the job on the latest Ubuntu runner provided by GitHub
 
     steps:
+      # Step 1: Clone the current repository into the runner environment
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 
-          token: ${{ secrets.DOCKER_GIT_ACTIONS }}
+          fetch-depth: 1 # Fetches only the latest commit history to speed up checkout
+          token: ${{ secrets.DOCKER_GIT_ACTIONS }} # Uses a custom PAT token to allow pushing changes back later
 
+      # Step 2: Query the upstream repository to find its most recent version tag
       - name: Fetch latest upstream tag
         id: upstream
         run: |
-          # get latest tag from upstream repo
+          # Fetch remote tags from the target repo, filter out the tag names, sort them by version, and pick the latest
           TAG=$(git ls-remote --tags https://github.com/complexlogic/rsgain.git \
             | awk -F/ '{print $3}' \
             | sort -V \
             | tail -n 1)
           echo "Latest upstream tag: $TAG"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT # Saves the tag as an output variable for subsequent steps
 
+      # Step 3: Ensure the tag retrieval didn't fail or return an empty string
       - name: Validate tag
         run: |
           if [ -z "${{ steps.upstream.outputs.tag }}" ]; then
@@ -34,28 +39,32 @@ jobs:
             exit 1
           fi
 
+      # Step 4: Check the local tracking file to see what version was built last time
       - name: Read last built tag
         id: prev
         run: |
           if [ -f .upstream-tag ]; then
-            echo "prev_tag=$(cat .upstream-tag)" >> $GITHUB_OUTPUT
+            echo "prev_tag=$(cat .upstream-tag)" >> $GITHUB_OUTPUT # Output existing tag
           else
-            echo "prev_tag=none" >> $GITHUB_OUTPUT
+            echo "prev_tag=none" >> $GITHUB_OUTPUT # Default if tracking file does not exist yet
           fi
 
+      # Step 5: Compare upstream tag against local tag to decide if a new build is needed
       - name: Decide whether to build
         id: decision
         run: |
           if [ "${{ steps.upstream.outputs.tag }}" != "${{ steps.prev.outputs.prev_tag }}" ]; then
-            echo "build=true" >> $GITHUB_OUTPUT
+            echo "build=true" >> $GITHUB_OUTPUT # New version found; trigger build
           else
-            echo "build=false" >> $GITHUB_OUTPUT
+            echo "build=false" >> $GITHUB_OUTPUT # Versions match; skip build
           fi
 
+      # Step 6: Initialize Docker Buildx for multi-architecture building capabilities
       - name: Set up Docker Buildx
-        if: steps.decision.outputs.build == 'true'
+        if: steps.decision.outputs.build == 'true' # Only runs if a build is required
         uses: docker/setup-buildx-action@v3
 
+      # Step 7: Authenticate with GitHub Packages Container Registry (GHCR)
       - name: Log in to GHCR
         if: steps.decision.outputs.build == 'true'
         uses: docker/login-action@v3
@@ -64,6 +73,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.DOCKER_GIT_ACTIONS }}
 
+      # Step 8: Build the multi-arch image and push it to GHCR
       - name: Build and push Docker image
         if: steps.decision.outputs.build == 'true'
         run: |
@@ -76,15 +86,18 @@ jobs:
             --push \
             .
 
+      # Step 9: Write the newly built tag to the local tracking file
       - name: Save new tag
         if: steps.decision.outputs.build == 'true'
         run: echo "${{ steps.upstream.outputs.tag }}" > .upstream-tag
 
+      # Step 10: Commit and push the updated tracking file back to your repository
       - name: Commit updated tag
         if: steps.decision.outputs.build == 'true'
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add .upstream-tag
+          # [skip ci] in the commit message prevents this write-back from triggering infinite workflow loops
           git commit -m "Update upstream tag to ${{ steps.upstream.outputs.tag }} [skip ci]"
-          git push https://x-access-token:${{ secrets.DOCKER_GIT_ACTIONS }}@github.com/${{ github.repository }} HEAD:main          
+          git push https://x-access-token:${{ secrets.DOCKER_GIT_ACTIONS }}@github.com/${{ github.repository }} HEAD:main
